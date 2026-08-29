@@ -13,6 +13,11 @@ export function getLocalAddress(): string {
     localAddress = normalizeAddr(id.address)
     return localAddress
   }
+  for (const [_e, data] of engine.getEntitiesWith(PlayerIdentityData)) {
+    if (!data.address) continue
+    localAddress = normalizeAddr(data.address)
+    return localAddress
+  }
   return localAddress
 }
 

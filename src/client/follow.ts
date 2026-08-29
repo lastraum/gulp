@@ -137,19 +137,16 @@ export function registerFollow() {
 
     const targetT = Transform.getMutable(camTarget)
     const eyeT = Transform.getMutable(camEye)
+    targetT.position.x = x
+    targetT.position.y = lookY
+    targetT.position.z = z
     if (!primed) {
-      targetT.position.x = x
-      targetT.position.y = lookY
-      targetT.position.z = z
       eyeT.position.x = eyeX
       eyeT.position.y = eyeY
       eyeT.position.z = eyeZ
       primed = true
     } else {
-      const a = 1 - Math.exp(-14 * dt)
-      targetT.position.x += (x - targetT.position.x) * a
-      targetT.position.y += (lookY - targetT.position.y) * a
-      targetT.position.z += (z - targetT.position.z) * a
+      const a = 1 - Math.exp(-28 * dt)
       eyeT.position.x += (eyeX - eyeT.position.x) * a
       eyeT.position.y += (eyeY - eyeT.position.y) * a
       eyeT.position.z += (eyeZ - eyeT.position.z) * a

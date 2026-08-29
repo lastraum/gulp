@@ -6,13 +6,15 @@ import {
   TextAlignMode,
   TextShape,
   Transform,
+  Tween,
   engine
 } from '@dcl/sdk/ecs'
 import { Color3, Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getPlayer } from '@dcl/sdk/players'
-import { FOOD_KIND_BOOST, FOOD_KIND_SPIKE, botName, radiusFromMass } from '../shared/config'
+import { FOOD_KIND_BOOST, FOOD_KIND_SPIKE, botName, isBot, radiusFromMass } from '../shared/config'
 import { room } from '../shared/messages'
 import { Blob, Food } from '../shared/schemas'
+import { getBotMotion, getBotParent } from './bots'
 import { isLocalAddr } from './local'
 import { IRIS, SPIKE, WHITE, addressIndex, hueIndex, makeBall, paintCone, paintGoldSphere, paintSphere, paintSpikeSphere, pastel } from './mesh'
 import { getLocalBlobMass, getLocalBlobPos, getLocalBlobVel, isSpiked } from './smooth'
@@ -39,6 +41,7 @@ const foodVisuals = new Map<number, Entity>()
 const foodBits = new Map<number, Entity[]>()
 const goneFood = new Set<number>()
 const BLOB_SPIKE_N = 10
+let lastLocalTint = 0
 
 type Spark = { entity: Entity; vx: number; vy: number; vz: number; life: number; maxLife: number; size: number }
 const sparks: Spark[] = []
@@ -70,6 +73,7 @@ function ensureBlobVisual(blobId: number, address: string, tint = -1): BlobVis {
   if (vis) return vis
   const root = engine.addEntity()
   Transform.create(root)
+  Tween.deleteFrom(root)
   const color = tint >= 0 ? pastel(tint) : pastel(addressIndex(address))
   const body = makeBall(root, color)
   const rollPivot = engine.addEntity()
@@ -228,7 +232,8 @@ function layoutNameTags() {
   const clusters = new Map<string, { x: number; z: number; top: number; n: number }>()
   for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
     const vis = blobVisuals.get(blob.blobId)
-    const p = isLocalAddr(blob.address) ? getLocalBlobPos(blob.blobId) : null
+    const local = isLocalAddr(blob.address)
+    const p = local ? getLocalBlobPos(blob.blobId) : isBot(blob.address) ? getBotMotion(blob.address) : null
     const x = p?.x ?? blob.x
     const z = p?.z ?? blob.z
     const r = vis?.shownR ?? radiusFromMass(blob.mass)
@@ -366,8 +371,25 @@ export function spawnFoodVisual(id: number, x: number, z: number, mass: number, 
   ensureFoodVisual(id, x, radiusFromMass(mass), z, mass, hue, kind)
 }
 
+function shade(color: Color4, k: number): Color4 {
+  return Color4.create(Math.min(1, color.r * k), Math.min(1, color.g * k), Math.min(1, color.b * k), 1)
+}
+
 function spawnBurst(x: number, y: number, z: number, hue: number, n: number, size: number, spdMin: number, spdMax: number, life: number) {
-  const color = pastel(hueIndex(hue))
+  spawnBurstColor(x, y, z, pastel(hueIndex(hue)), n, size, spdMin, spdMax, life)
+}
+
+function spawnBurstColor(
+  x: number,
+  y: number,
+  z: number,
+  color: Color4,
+  n: number,
+  size: number,
+  spdMin: number,
+  spdMax: number,
+  life: number
+) {
   for (let i = 0; i < n; i++) {
     const theta = Math.random() * Math.PI * 2
     const phi = Math.random() * Math.PI
@@ -398,6 +420,14 @@ export function spawnKillBurst(x: number, y: number, z: number) {
   spawnBurst(x, y, z, 0.02, 28, 2.6, 10, 22, 0.85)
   spawnBurst(x, y, z, 0.08, 16, 4.8, 6, 14, 1.05)
   spawnBurst(x, y, z, 0.12, 10, 7.2, 3, 9, 1.2)
+}
+
+export function spawnDeathBurst(x: number, y: number, z: number) {
+  const color = pastel(lastLocalTint)
+  spawnBurstColor(x, y, z, color, 64, 2.4, 16, 38, 1.2)
+  spawnBurstColor(x, y, z, shade(color, 1.18), 48, 3.8, 12, 28, 1.45)
+  spawnBurstColor(x, y, z, shade(color, 0.72), 32, 6.2, 8, 20, 1.7)
+  spawnBurstColor(x, y, z, shade(color, 1.35), 28, 1.6, 10, 26, 1.05)
 }
 
 function tickSparks(dt: number) {
@@ -435,8 +465,17 @@ export function registerVisuals() {
       liveBlobs.add(blob.blobId)
       const vis = ensureBlobVisual(blob.blobId, blob.address, blob.tint)
       const local = isLocalAddr(blob.address)
-      const p = local ? getLocalBlobPos(blob.blobId) : null
-      const v = local ? getLocalBlobVel(blob.blobId) : null
+      if (local) lastLocalTint = blob.tint >= 0 ? blob.tint : lastLocalTint
+      const botParent = !local && isBot(blob.address) ? getBotParent(blob.address) : null
+      const rootT = Transform.getMutable(vis.root)
+      if (botParent) {
+        if (rootT.parent !== botParent) rootT.parent = botParent
+      } else if (rootT.parent) {
+        rootT.parent = 0 as Entity
+        Tween.deleteFrom(vis.root)
+      }
+      const p = local ? getLocalBlobPos(blob.blobId) : botParent ? { x: 0, z: 0 } : null
+      const v = local ? getLocalBlobVel(blob.blobId) : botParent ? { x: 0, z: 0 } : null
       const mass = local ? getLocalBlobMass(blob.blobId, blob.mass) : blob.mass
       layoutBlob(
         vis,

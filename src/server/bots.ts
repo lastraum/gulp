@@ -1,29 +1,28 @@
-import { engine, Transform } from '@dcl/sdk/ecs'
+import { engine, Entity, Transform } from '@dcl/sdk/ecs'
 import { Storage } from '@dcl/sdk/server'
 import {
+  ARENA,
   BOT_COUNT,
   BOT_MAX,
-  COG_HIT_R,
-  EAT_MASS_RATIO,
-  START_MASS,
+  BOT_PATH_PAD,
+  BOT_SPEED,
+  TWEEN_MIN_DIST,
   botAddress,
   botName,
   isBot,
-  radiusFromMass,
   randomArenaPoint
 } from '../shared/config'
 import { logEvent } from '../shared/log'
-import { Blob, Cell, Food } from '../shared/schemas'
+import { room } from '../shared/messages'
+import { pickNextPoint, tweenMotion, TweenSeg } from '../shared/path'
+import { Blob, Cell } from '../shared/schemas'
 import { rememberName } from './board'
-import { getCogPositions } from './cogs'
 
-type Intent = { x: number; z: number }
 type SpawnFn = (address: string, at?: { x: number; z: number }) => void
 type RemoveFn = (address: string) => void
 
 const KEY = 'botCount'
-const wanderUntil = new Map<string, number>()
-const wanderDir = new Map<string, Intent>()
+const paths = new Map<string, TweenSeg>()
 
 let wanted = BOT_COUNT
 let spawnFn: SpawnFn | null = null
@@ -40,8 +39,18 @@ export function botCount(): number {
 }
 
 export function forgetBot(address: string) {
-  wanderUntil.delete(address)
-  wanderDir.delete(address)
+  paths.delete(address)
+}
+
+function alongOf(path: TweenSeg, now = Date.now()) {
+  return tweenMotion(path.ax, path.az, path.bx, path.bz, path.speed, path.t0, now)
+}
+
+export function botPosition(address: string, now = Date.now()): { x: number; z: number } | null {
+  const path = paths.get(address)
+  if (!path) return null
+  const at = alongOf(path, now)
+  return { x: at.x, z: at.z }
 }
 
 function botIndex(address: string): number {
@@ -58,25 +67,57 @@ function liveIndices(): number[] {
   return out.sort((a, b) => a - b)
 }
 
-function occupiedPoints(): { x: number; z: number }[] {
-  const out: { x: number; z: number }[] = []
-  for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
-    out.push({ x: blob.x, z: blob.z })
+function broadcastPath(address: string, to?: string) {
+  const path = paths.get(address)
+  if (!path) return
+  const along = alongOf(path)
+  const left = Math.max(1, Math.floor(along.durMs * (1 - along.u)))
+  const payload = {
+    address,
+    speed: path.speed,
+    duration: left,
+    from: { x: along.x, y: 0, z: along.z },
+    to: { x: path.bx, y: 0, z: path.bz }
   }
-  return out
+  if (to) room.send('botPath', payload, { to: [to] })
+  else room.send('botPath', payload)
+}
+
+export function sendBotsTo(address?: string) {
+  for (const who of paths.keys()) broadcastPath(who, address)
+}
+
+function setSeg(
+  address: string,
+  from: { x: number; z: number },
+  to: { x: number; z: number },
+  now: number,
+  speed: number
+): TweenSeg {
+  const path: TweenSeg = { speed, t0: now, ax: from.x, az: from.z, bx: to.x, bz: to.z }
+  paths.set(address, path)
+  broadcastPath(address)
+  return path
+}
+
+function advanceIfDone(address: string, now: number) {
+  const path = paths.get(address)
+  if (!path) return
+  const along = alongOf(path, now)
+  if (!along.done && now - path.t0 < along.durMs) return
+  const start = { x: path.bx, z: path.bz }
+  setSeg(address, start, pickNextPoint(start, BOT_PATH_PAD, TWEEN_MIN_DIST), now, path.speed)
 }
 
 function spawnOne(index: number) {
   if (!spawnFn) return
   const address = botAddress(index)
   rememberName(address, botName(address) ?? `Pip ${index + 1}`)
-  const placed = occupiedPoints()
-  let p = randomArenaPoint(8)
-  for (let n = 0; n < 40; n++) {
-    if (placed.every((q) => Math.hypot(q.x - p.x, q.z - p.z) >= 36)) break
-    p = randomArenaPoint(8)
-  }
-  spawnFn(address, p)
+  const from = randomArenaPoint(BOT_PATH_PAD)
+  const to = pickNextPoint(from, BOT_PATH_PAD, TWEEN_MIN_DIST)
+  const speed = BOT_SPEED * (0.82 + (index % 6) * 0.06)
+  setSeg(address, from, to, Date.now(), speed)
+  spawnFn(address, from)
 }
 
 function syncLive() {
@@ -147,155 +188,33 @@ export function removeBot(): number {
   return wanted
 }
 
-function cluster(address: string): { x: number; z: number; mass: number; r: number } | null {
-  let x = 0
-  let z = 0
-  let mass = 0
-  let n = 0
-  let maxR = 0
-  for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
-    if (blob.address !== address) continue
-    x += blob.x
-    z += blob.z
-    mass += blob.mass
-    n++
-    const r = radiusFromMass(blob.mass)
-    if (r > maxR) maxR = r
-  }
-  if (n === 0 || mass <= 0) return null
-  return { x: x / n, z: z / n, mass, r: maxR }
-}
-
-function steerWander(address: string, now: number): Intent {
-  if (now >= (wanderUntil.get(address) ?? 0)) {
-    const p = randomArenaPoint(4)
-    const me = cluster(address)
-    const dx = p.x - (me?.x ?? p.x)
-    const dz = p.z - (me?.z ?? p.z)
-    const len = Math.hypot(dx, dz) || 1
-    wanderDir.set(address, { x: dx / len, z: dz / len })
-    wanderUntil.set(address, now + 1400 + Math.random() * 2200)
-  }
-  return wanderDir.get(address) ?? { x: 0, z: 0 }
-}
-
-export function tickBots(setIntent: (address: string, x: number, z: number) => void, isDead: (address: string) => boolean) {
+export function tickBots(isDead: (address: string) => boolean) {
   const now = Date.now()
-  const pieces: { address: string; x: number; z: number; mass: number; r: number }[] = []
-  for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
-    pieces.push({
-      address: blob.address,
-      x: blob.x,
-      z: blob.z,
-      mass: blob.mass,
-      r: radiusFromMass(blob.mass)
-    })
-  }
-  const foods: { x: number; z: number; mass: number }[] = []
-  for (const [entity, food] of engine.getEntitiesWith(Food, Transform)) {
-    const p = Transform.get(entity).position
-    foods.push({ x: p.x, z: p.z, mass: food.mass })
-  }
-  const cogs = getCogPositions()
-
-  for (const [_entity, cell] of engine.getEntitiesWith(Cell)) {
+  for (const address of [...paths.keys()]) advanceIfDone(address, now)
+  for (const [entity, cell] of engine.getEntitiesWith(Cell, Transform)) {
     if (!isBot(cell.address)) continue
-    if (isDead(cell.address)) {
-      setIntent(cell.address, 0, 0)
-      continue
+    if (isDead(cell.address)) continue
+    const path = paths.get(cell.address)
+    if (!path) continue
+    const list: Entity[] = []
+    for (const [blobEntity, blob] of engine.getEntitiesWith(Blob)) {
+      if (blob.address === cell.address) list.push(blobEntity)
     }
-    const me = cluster(cell.address)
-    if (!me) {
-      setIntent(cell.address, 0, 0)
-      continue
+    if (list.length === 0) continue
+    const at = alongOf(path, now)
+    for (const blobEntity of list) {
+      const b = Blob.getMutable(blobEntity)
+      b.x = at.x
+      b.z = at.z
+      b.vx = at.vx
+      b.vz = at.vz
     }
-
-    const idx = Number(cell.address.slice(4)) || 0
-    const nerve = 0.85 + (idx % 5) * 0.08
-    const greed = 0.75 + (idx % 4) * 0.12
-
-    let fx = 0
-    let fz = 0
-    let hx = 0
-    let hz = 0
-    let huntBest = Infinity
-    let foodX = 0
-    let foodZ = 0
-    let foodBest = Infinity
-
-    for (const other of pieces) {
-      if (other.address === cell.address) continue
-      const dx = other.x - me.x
-      const dz = other.z - me.z
-      const dist = Math.hypot(dx, dz)
-      if (dist < 0.001) continue
-      const nx = dx / dist
-      const nz = dz / dist
-      const danger = dist < (other.r + me.r) * 2.4 + 10 * nerve && other.mass > me.mass * EAT_MASS_RATIO
-      if (danger) {
-        const w = (18 * nerve) / Math.max(2, dist - other.r)
-        fx -= nx * w
-        fz -= nz * w
-      } else if (
-        me.mass >= START_MASS + 4 &&
-        me.mass > other.mass * EAT_MASS_RATIO &&
-        dist < 22 * greed + me.r * 3 &&
-        dist < huntBest
-      ) {
-        huntBest = dist
-        hx = nx
-        hz = nz
-      }
-    }
-
-    for (const cog of cogs) {
-      const dx = cog.x - me.x
-      const dz = cog.z - me.z
-      const dist = Math.hypot(dx, dz)
-      const keep = COG_HIT_R + me.r + 5
-      if (dist >= keep || dist < 0.001) continue
-      const w = 14 / Math.max(1.2, dist - COG_HIT_R)
-      fx -= (dx / dist) * w
-      fz -= (dz / dist) * w
-    }
-
-    for (let i = 0; i < foods.length; i++) {
-      const food = foods[i]
-      const dx = food.x - me.x
-      const dz = food.z - me.z
-      const dist = Math.hypot(dx, dz)
-      if (dist > 48 || dist >= foodBest) continue
-      foodBest = dist
-      foodX = dx
-      foodZ = dz
-    }
-
-    let dirx = 0
-    let dirz = 0
-    const flee = Math.hypot(fx, fz)
-    if (flee > 0.15) {
-      dirx = fx
-      dirz = fz
-    } else if (huntBest < Infinity) {
-      dirx = hx
-      dirz = hz
-    } else if (foodBest < Infinity) {
-      dirx = foodX
-      dirz = foodZ
-    } else {
-      const w = steerWander(cell.address, now)
-      dirx = w.x
-      dirz = w.z
-    }
-
-    const t = now * 0.001 + idx * 1.7
-    dirx += Math.sin(t * 0.9) * 0.12
-    dirz += Math.cos(t * 0.8) * 0.12
-    const len = Math.hypot(dirx, dirz)
-    if (len < 0.02) {
-      setIntent(cell.address, 0, 0)
-      continue
-    }
-    setIntent(cell.address, dirx / len, dirz / len)
+    const t = Transform.getMutable(entity)
+    t.position.x = at.x
+    t.position.y = ARENA.y
+    t.position.z = at.z
+    const mut = Cell.getMutable(entity)
+    mut.vx = at.vx
+    mut.vz = at.vz
   }
 }

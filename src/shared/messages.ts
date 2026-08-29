@@ -58,7 +58,8 @@ export const Messages = {
     address: Schemas.String,
     until: Schemas.Float,
     stacks: Schemas.Int,
-    untils: Schemas.Array(Schemas.Float)
+    untils: Schemas.Array(Schemas.Float),
+    remains: Schemas.Array(Schemas.Float)
   }),
   spikeStart: Schemas.Map({
     address: Schemas.String,
@@ -97,14 +98,20 @@ export const Messages = {
     id: Schemas.Int,
     speed: Schemas.Float,
     spin: Schemas.Float,
-    t0: Schemas.Float,
+    duration: Schemas.Float,
     points: Schemas.Array(Schemas.Vector3)
   }),
   flamingoPath: Schemas.Map({
     id: Schemas.Int,
     speed: Schemas.Float,
-    dist: Schemas.Float,
-    t0: Schemas.Float,
+    duration: Schemas.Float,
+    from: Schemas.Vector3,
+    to: Schemas.Vector3
+  }),
+  botPath: Schemas.Map({
+    address: Schemas.String,
+    speed: Schemas.Float,
+    duration: Schemas.Float,
     from: Schemas.Vector3,
     to: Schemas.Vector3
   }),
@@ -114,7 +121,8 @@ export const Messages = {
   gmState: Schemas.Map({
     flamingos: Schemas.Boolean,
     spinners: Schemas.Int,
-    bots: Schemas.Int
+    bots: Schemas.Int,
+    forge: Schemas.Boolean
   })
 }
 

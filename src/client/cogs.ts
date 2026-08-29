@@ -1,4 +1,4 @@
-import { Entity, Transform, engine } from '@dcl/sdk/ecs'
+import { Entity, Transform, Tween, engine } from '@dcl/sdk/ecs'
 import { Quaternion, Vector3 } from '@dcl/sdk/math'
 import { COG_HUB_R, COG_SPOKE_LEN, COG_SPOKE_R, COG_SPOKES } from '../shared/config'
 import { room } from '../shared/messages'
@@ -9,8 +9,7 @@ type CogVisual = {
   root: Entity
   spinner: Entity
   parts: Entity[]
-  spin: number
-  t0: number
+  seen: boolean
 }
 
 const visuals = new Map<number, CogVisual>()
@@ -45,52 +44,50 @@ function buildCogMesh(spinner: Entity): Entity[] {
   return parts
 }
 
-function ensureCogVisual(id: number, x: number, z: number, spin: number, t0: number) {
+function ensureVisual(id: number, x: number, z: number, spin: number): CogVisual {
   let vis = visuals.get(id)
-  if (!vis) {
-    const root = engine.addEntity()
-    Transform.create(root, { position: Vector3.create(x, 0, z) })
-    const spinner = engine.addEntity()
-    Transform.create(spinner, { parent: root })
-    const parts = buildCogMesh(spinner)
-    vis = { root, spinner, parts, spin, t0 }
-    visuals.set(id, vis)
-    return vis
-  }
-  vis.spin = spin
-  vis.t0 = t0
-  const t = Transform.getMutable(vis.root)
-  t.position.x = x
-  t.position.y = 0
-  t.position.z = z
+  if (vis) return vis
+  const root = engine.addEntity()
+  Transform.create(root, { position: Vector3.create(x, 0, z) })
+  const spinner = engine.addEntity()
+  Transform.create(spinner, { parent: root })
+  Tween.setRotateContinuous(spinner, Quaternion.fromEulerDegrees(0, 1, 0), spin)
+  vis = { root, spinner, parts: buildCogMesh(spinner), seen: false }
+  visuals.set(id, vis)
   return vis
+}
+
+function playMove(vis: CogVisual, ax: number, az: number, bx: number, bz: number, duration: number) {
+  const t = Transform.getMutable(vis.root)
+  t.position = Vector3.create(ax, 0, az)
+  Tween.setMove(vis.root, Vector3.create(ax, 0, az), Vector3.create(bx, 0, bz), Math.max(1, duration))
 }
 
 export function registerCogs() {
   room.onMessage('obstaclePath', (data) => {
-    const point = data.points[0] ?? { x: 8, y: 0, z: 8 }
-    ensureCogVisual(data.id, point.x, point.z, data.spin, Number(data.t0))
+    const pts = data.points ?? []
+    const a = pts[0]
+    if (!a) return
+    const b = pts[1] ?? a
+    const vis = ensureVisual(data.id, a.x, a.z, data.spin)
+    playMove(vis, a.x, a.z, b.x, b.z, data.duration)
   })
 
   engine.addSystem(() => {
     const live = new Set<number>()
-    for (const [_entity, cog] of engine.getEntitiesWith(Cog, Transform)) {
+    for (const [_entity, cog] of engine.getEntitiesWith(Cog)) {
       live.add(cog.id)
-      const p = Transform.get(_entity).position
-      ensureCogVisual(cog.id, p.x, p.z, cog.spin, Number(cog.t0))
     }
-    const now = Date.now()
     for (const [id, vis] of visuals) {
-      if (!live.has(id)) {
-        for (const part of vis.parts) engine.removeEntity(part)
-        engine.removeEntity(vis.spinner)
-        engine.removeEntity(vis.root)
-        visuals.delete(id)
+      if (live.has(id)) {
+        vis.seen = true
         continue
       }
-      const spinT = Transform.getMutable(vis.spinner)
-      const deg = ((now - vis.t0) / 1000) * vis.spin
-      spinT.rotation = Quaternion.fromEulerDegrees(0, deg, 0)
+      if (!vis.seen) continue
+      for (const part of vis.parts) engine.removeEntity(part)
+      engine.removeEntity(vis.spinner)
+      engine.removeEntity(vis.root)
+      visuals.delete(id)
     }
   })
 }

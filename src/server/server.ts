@@ -27,6 +27,7 @@ import {
   SPLIT_COOLDOWN_MS,
   PLAYER_COLORS,
   START_MASS,
+  BOT_MAX_MASS,
   blobEatsBlob,
   clampArena,
   foodOverlaps,
@@ -36,14 +37,16 @@ import {
   speedFromMass,
   stepBody
 } from '../shared/config'
+import { isGm } from '../shared/gm'
 import { logEvent } from '../shared/log'
 import { room } from '../shared/messages'
 import { Blob, Cell, Food, Heartbeat, protectServerWrites } from '../shared/schemas'
 import { loadBoard, recordBest, rememberName, resetBoard, sendBoard } from './board'
 
-import { addBot, botCount, forgetBot, isBot, loadBots, removeBot, tickBots } from './bots'
+import { addBot, botCount, botPosition, forgetBot, isBot, loadBots, removeBot, sendBotsTo, tickBots } from './bots'
 import { addCog, cogCount, hitCogEntity, removeCog, sendCogsTo, spawnCogs, tickCogs } from './cogs'
 import { clearFlamingos, hasFlamingos, sendFlamingosTo, spawnFlamingos, tickFlamingos } from './flamingos'
+import { initForge, isForgePinging, noteFoodEaten, noteHumanEaten, reportForgeLeave, setForgePinging } from './forge'
 
 const cells = new Map<string, Entity>()
 const intents = new Map<string, { x: number; z: number }>()
@@ -129,8 +132,22 @@ function blobsOf(address: string): Entity[] {
 function refreshCellMass(address: string) {
   const cellEntity = cells.get(address)
   if (!cellEntity || !Cell.has(cellEntity)) return 0
+  if (isBot(address)) {
+    for (const entity of blobsOf(address)) {
+      const b = Blob.getMutable(entity)
+      if (b.mass >= BOT_MAX_MASS) b.mass = START_MASS
+    }
+  }
   let total = 0
   for (const entity of blobsOf(address)) total += Blob.get(entity).mass
+  if (isBot(address) && total >= BOT_MAX_MASS) {
+    const list = blobsOf(address)
+    if (list.length > 0) {
+      Blob.getMutable(list[0]).mass = START_MASS
+      for (let i = 1; i < list.length; i++) engine.removeEntity(list[i])
+    }
+    total = START_MASS
+  }
   Cell.getMutable(cellEntity).mass = total
   broadcastMass(address, total)
   return total
@@ -141,6 +158,7 @@ function clearBlobs(address: string) {
 }
 
 function removeCell(address: string) {
+  reportForgeLeave(address)
   const entity = cells.get(address)
   clearBlobs(address)
   if (entity) engine.removeEntity(entity)
@@ -156,14 +174,14 @@ function removeCell(address: string) {
 }
 
 function sendGmState(to?: string) {
-  const payload = { flamingos: hasFlamingos(), spinners: cogCount(), bots: botCount() }
+  const payload = { flamingos: hasFlamingos(), spinners: cogCount(), bots: botCount(), forge: isForgePinging() }
   if (to) room.send('gmState', payload, { to: [to] })
   else room.send('gmState', payload)
 }
 
 function respawnCell(entity: Entity, address: string) {
   const r = radiusFromMass(START_MASS)
-  const p = randomArenaPoint(r)
+  const p = botPosition(address) ?? randomArenaPoint(r)
   const t = Transform.getMutable(entity)
   t.position.x = p.x
   t.position.y = ARENA.y
@@ -234,7 +252,8 @@ function grantBoost(address: string) {
   const stacked = live.length > BOOST_MAX_STACKS ? live.slice(live.length - BOOST_MAX_STACKS) : live
   boostUntil.set(address, stacked)
   const until = stacked.reduce((m, t) => (t > m ? t : m), 0)
-  room.send('boostStart', { address, until, stacks: stacked.length, untils: stacked })
+  const remains = stacked.map((t) => Math.max(0, t - now))
+  room.send('boostStart', { address, until, stacks: stacked.length, untils: stacked, remains })
 }
 
 function spawnSpike(at?: { x: number; z: number }) {
@@ -263,6 +282,7 @@ function grantSpike(address: string) {
 }
 
 function hasSpikes(address: string): boolean {
+  if (isBot(address)) return true
   return Date.now() < (spikeUntil.get(address) ?? 0)
 }
 
@@ -272,7 +292,8 @@ function sendPowersTo(address: string) {
     const live = untils.filter((t) => t > now)
     if (live.length === 0) continue
     const until = live.reduce((m, t) => (t > m ? t : m), 0)
-    room.send('boostStart', { address: who, until, stacks: live.length, untils: live }, { to: [address] })
+    const remains = live.map((t) => Math.max(0, t - now))
+    room.send('boostStart', { address: who, until, stacks: live.length, untils: live, remains }, { to: [address] })
   }
   for (const [who, until] of spikeUntil) {
     if (until > now) room.send('spikeStart', { address: who, until, remain: until - now }, { to: [address] })
@@ -288,6 +309,8 @@ function removeFood(id: number, foodEntity: Entity) {
 function tryEatFood(blobEntity: Entity, foodEntity: Entity, foodId: number, foodMass: number): boolean {
   const kind = Food.has(foodEntity) ? Food.get(foodEntity).kind : FOOD_KIND_PELLET
   const address = Blob.get(blobEntity).address
+  if (isBot(address) && kind !== FOOD_KIND_PELLET) return false
+  noteFoodEaten(address)
   if (kind === FOOD_KIND_BOOST) {
     grantBoost(address)
     removeFood(foodId, foodEntity)
@@ -328,6 +351,7 @@ function syncPlayers() {
     missingSince.set(address, since)
     if (now - since < 8000) continue
     missingSince.delete(address)
+    reportForgeLeave(address)
     engine.removeEntity(entity)
     cells.delete(address)
     intents.delete(address)
@@ -358,6 +382,7 @@ function blobById(blobId: number): Entity | null {
 }
 
 function killPlayer(victim: string, killer: string, x: number, z: number) {
+  noteHumanEaten(killer, victim)
   clearBlobs(victim)
   const cell = cells.get(victim)
   if (cell && Cell.has(cell)) {
@@ -380,6 +405,7 @@ function consumeBlob(eaterBlob: Entity, preyBlob: Entity) {
   const prey = Blob.get(preyBlob)
   const eater = Blob.get(eaterBlob)
   if (eater.address === prey.address) return
+  if (isBot(prey.address)) return
   const victim = prey.address
   const killer = eater.address
   const x = prey.x
@@ -520,6 +546,7 @@ function knockBlob(
   shred: boolean
 ) {
   if (!Blob.has(entity)) return
+  if (isBot(Blob.get(entity).address)) return
   const mut = Blob.getMutable(entity)
   const dx = mut.x - fromX
   const dz = mut.z - fromZ
@@ -560,32 +587,33 @@ function resolveSpikeTouch(
   const am = Blob.has(a.blob) ? Blob.get(a.blob).mass : a.mass
   const bm = Blob.has(b.blob) ? Blob.get(b.blob).mass : b.mass
   const touching = dist <= (a.r + b.r) * 1.4
-  const eatish = blobEatsBlob(am, bm, dist, 2.2) || blobEatsBlob(bm, am, dist, 2.2)
-  if (dist < 0.0001 || (!touching && !eatish)) return true
+  const aEats = blobEatsBlob(am, bm, dist, 2.2)
+  const bEats = blobEatsBlob(bm, am, dist, 2.2)
+  if (dist < 0.0001 || (!touching && !aEats && !bEats)) return false
   const now = Date.now()
   const aId = Blob.get(a.blob).blobId
   const bId = Blob.get(b.blob).blobId
   const key = spikePairKey(aId, bId)
   const last = spikeHitCd.get(key) ?? 0
   if (now - last < SPIKE_HIT_CD_MS) return true
-  spikeHitCd.set(key, now)
-  if (aSpike && bSpike) {
-    knockBlob(a.blob, b.x, b.z, b.r, SPIKE_IMPULSE * 0.7, false)
-    knockBlob(b.blob, a.x, a.z, a.r, SPIKE_IMPULSE * 0.7, false)
-    return true
-  }
-  if (aSpike) {
+  if (aSpike && bEats) {
+    spikeHitCd.set(key, now)
     knockBlob(b.blob, a.x, a.z, a.r, SPIKE_IMPULSE, true)
     logEvent('spike.hit', { attacker: a.address, victim: b.address, x: b.x, z: b.z })
-  } else {
+    return true
+  }
+  if (bSpike && aEats) {
+    spikeHitCd.set(key, now)
     knockBlob(a.blob, b.x, b.z, b.r, SPIKE_IMPULSE, true)
     logEvent('spike.hit', { attacker: b.address, victim: a.address, x: a.x, z: a.z })
+    return true
   }
-  return true
+  return false
 }
 
 function tickMove(dt: number) {
   for (const [entity, cell] of engine.getEntitiesWith(Cell, Transform)) {
+    if (isBot(cell.address)) continue
     const intent = intents.get(cell.address) ?? { x: 0, z: 0 }
     const list = blobsOf(cell.address)
     if (list.length === 0) continue
@@ -732,6 +760,7 @@ function combinePlayer(address: string) {
 export function initServer() {
   logEvent('server.start', { game: 'gulp' })
   protectServerWrites()
+  initForge()
   void loadBoard()
 
   heartbeatEntity = engine.addEntity()
@@ -754,6 +783,7 @@ export function initServer() {
     if (existing && Cell.has(existing)) respawnCell(existing, address)
     else spawnCell(address)
     sendCogsTo(address)
+    sendBotsTo(address)
     if (hasFlamingos()) sendFlamingosTo(address)
     sendPowersTo(address)
     sendBoard(address)
@@ -789,6 +819,7 @@ export function initServer() {
     if (!preyEntity || !Blob.has(preyEntity)) return
     const prey = Blob.get(preyEntity)
     if (isDead(prey.address)) return
+    if (isBot(prey.address)) return
     let eaters: Entity[] = []
     if (prey.address === address) {
       for (const [entity, blob] of engine.getEntitiesWith(Blob)) {
@@ -804,9 +835,8 @@ export function initServer() {
     for (const eaterEntity of eaters) {
       if (!Blob.has(eaterEntity)) continue
       const eater = Blob.get(eaterEntity)
-      if (hasSpikes(prey.address) || hasSpikes(eater.address)) {
-        const parent = cells.get(eater.address)
-        if (preyParent && parent) resolveSpikeTouch(blobWorld(parent, eaterEntity), blobWorld(preyParent, preyEntity))
+      const parent = cells.get(eater.address)
+      if (preyParent && parent && resolveSpikeTouch(blobWorld(parent, eaterEntity), blobWorld(preyParent, preyEntity))) {
         continue
       }
       open.push(eaterEntity)
@@ -849,9 +879,22 @@ export function initServer() {
   room.onMessage('gmCmd', (data, context) => {
     if (!context?.from) return
     const address = normalizeAddress(context.from)
+    if (!isGm(address)) return
     if (data.cmd === 'resetBoard') {
       logEvent('gm.resetBoard', { address })
       void resetBoard()
+      return
+    }
+    if (data.cmd === 'forgeOn') {
+      setForgePinging(true)
+      logEvent('gm.forgeOn', { address })
+      sendGmState()
+      return
+    }
+    if (data.cmd === 'forgeOff') {
+      setForgePinging(false)
+      logEvent('gm.forgeOff', { address })
+      sendGmState()
       return
     }
     if (data.cmd === 'flamingosOn') {
@@ -894,17 +937,16 @@ export function initServer() {
   engine.addSystem((dt) => {
     try {
       syncPlayers()
-      tickBots((address, x, z) => intents.set(address, { x, z }), isDead)
       tickMove(dt)
       tickCogs((address) => refreshCellMass(address))
       if (hasFlamingos()) tickFlamingos()
+      tickBots(isDead)
       tickEat()
       tickDeaths()
       heartbeatAcc += dt
       if (heartbeatAcc >= 2 && heartbeatEntity) {
         heartbeatAcc = 0
         Heartbeat.getMutable(heartbeatEntity).t = Date.now()
-        sendCogsTo()
       }
     } catch (e) {
       logEvent('server.tick.fail', { error: String(e) })

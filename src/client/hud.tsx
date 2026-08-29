@@ -1,19 +1,23 @@
-import { engine } from '@dcl/sdk/ecs'
+import { PlayerIdentityData, engine } from '@dcl/sdk/ecs'
 import { Color4 } from '@dcl/sdk/math'
 import { getPlayer } from '@dcl/sdk/players'
 import ReactEcs, { Label, ReactEcsRenderer, ScreenInsetArea, UiEntity } from '@dcl/sdk/react-ecs'
-import { BOOST_MS, BOOST_MULT, BOT_MAX, COG_MAX, MAX_BLOBS, SPIKE_MS, botName, isBot } from '../shared/config'
+import { BOOST_MS, BOOST_MULT, BOT_MAX, COG_MAX, DEATH_BURST_MS, MAX_BLOBS, SPIKE_MS, botName, isBot } from '../shared/config'
+import { isGm } from '../shared/gm'
 import { room } from '../shared/messages'
 import { Blob } from '../shared/schemas'
 import { sendCombine, sendGmCmd, sendSplit } from './input'
-import { isLocalAddr } from './local'
+import { getLocalAddress, isLocalAddr } from './local'
 import { catalystFaceUrl, requestCatalystFaces } from './profiles'
 import { getBoostRemain, getBoostStacks, getSpikeRemain } from './smooth'
 
 type BoardRow = { address: string; name: string; best: number }
 
 const SPLASH_MS = 5000
+const DEATH_UI_MS = DEATH_BURST_MS + 3500
 
+let deathAt = 0
+let deathRevealAt = 0
 let deathUntil = 0
 let killerLabel = ''
 let storedBoard: BoardRow[] = []
@@ -26,6 +30,7 @@ let gmTab: 'general' | 'obstacles' = 'general'
 let gmFlamingosOn = false
 let gmSpinnerCount = 4
 let gmBotCount = 2
+let gmForgeOn = false
 
 export function isSplashActive(): boolean {
   return Date.now() < splashUntil
@@ -61,18 +66,31 @@ function boardRows(): (BoardRow & { mine: boolean })[] {
   }))
 }
 
-export function showDeathUi(killer: string) {
-  deathUntil = Date.now() + 3200
+export function beginDeath(killer: string) {
+  deathAt = Date.now()
+  deathRevealAt = deathAt + DEATH_BURST_MS
+  deathUntil = deathAt + DEATH_UI_MS
   killerLabel = killer ? playerName(killer) : 'another sphere'
 }
 
+export function showDeathUi(killer: string) {
+  beginDeath(killer)
+}
+
 export function hideDeathUi() {
+  deathAt = 0
+  deathRevealAt = 0
   deathUntil = 0
   killerLabel = ''
 }
 
 export function isDeathUiVisible(): boolean {
-  return Date.now() < deathUntil
+  const now = Date.now()
+  return deathRevealAt > 0 && now >= deathRevealAt && now < deathUntil
+}
+
+export function isDying(): boolean {
+  return deathAt > 0 && Date.now() < deathUntil
 }
 
 function leaderRow(row: BoardRow & { mine: boolean }, index: number) {
@@ -149,7 +167,12 @@ function leaderboardUi() {
           fontSize={21}
           color={Color4.White()}
           textAlign="middle-center"
-          uiTransform={{ width: 200, height: 40 }}
+          uiTransform={{
+            width: 200,
+            height: 40,
+            positionType: 'absolute',
+            position: { left: 77, top: 44 }
+          }}
         />
       </UiEntity>
       <UiEntity
@@ -223,6 +246,15 @@ function gmGeneralTab() {
           if (gmBotCount >= BOT_MAX) return
           gmBotCount += 1
           sendGmCmd('botAdd')
+        }
+      )}
+      {gmActionBtn(
+        gmForgeOn ? 'FORGE: ON' : 'FORGE: OFF',
+        gmForgeOn ? Color4.create(0.45, 0.95, 0.62, 1) : Color4.create(0.8, 0.8, 0.85, 1),
+        () => {
+          const next = !gmForgeOn
+          gmForgeOn = next
+          sendGmCmd(next ? 'forgeOn' : 'forgeOff')
         }
       )}
       {gmActionBtn(
@@ -310,14 +342,23 @@ function gmObstaclesTab() {
   )
 }
 
+function gmAllowed(): boolean {
+  if (isGm(getLocalAddress())) return true
+  if (isGm(getPlayer()?.userId)) return true
+  for (const [_e, data] of engine.getEntitiesWith(PlayerIdentityData)) {
+    if (isGm(data.address)) return true
+  }
+  return false
+}
+
 function gmPanel() {
   return (
     <UiEntity
       uiTransform={{
         width: 268,
-        height: gmOpen ? 196 : 36,
+        height: gmOpen ? 240 : 36,
         positionType: 'absolute',
-        position: { top: 16, right: 320 },
+        position: { top: 16, right: 16 },
         flexDirection: 'column',
         pointerFilter: 'block'
       }}
@@ -351,12 +392,12 @@ function gmPanel() {
         />
       </UiEntity>
       {gmOpen ? (
-        <UiEntity uiTransform={{ width: '100%', height: 160, flexDirection: 'column' }}>
+        <UiEntity uiTransform={{ width: '100%', height: 204, flexDirection: 'column' }}>
           <UiEntity uiTransform={{ width: '100%', height: 36, flexDirection: 'row', padding: { left: 8, right: 8 } }}>
             {gmTabBtn('general', 'GENERAL')}
             {gmTabBtn('obstacles', 'OBSTACLES')}
           </UiEntity>
-          <UiEntity uiTransform={{ width: '100%', height: 124, padding: { left: 8, right: 8, top: 6 } }}>
+          <UiEntity uiTransform={{ width: '100%', height: 168, padding: { left: 8, right: 8, top: 6 } }}>
             {gmTab === 'general' ? gmGeneralTab() : gmObstaclesTab()}
           </UiEntity>
         </UiEntity>
@@ -415,7 +456,7 @@ function splashUi() {
 }
 
 function actionButtonsUi() {
-  if (isDeathUiVisible() || isSplashActive()) return null
+  if (isDying() || isDeathUiVisible() || isSplashActive()) return null
   const pieces = localBlobCount()
   return (
     <UiEntity uiTransform={{ width: '100%', height: '100%', pointerFilter: 'none' }}>
@@ -550,6 +591,7 @@ export function setupHud() {
   })
   room.onMessage('gmState', (data) => {
     gmFlamingosOn = !!data.flamingos
+    gmForgeOn = !!data.forge
     if (typeof data.spinners === 'number') gmSpinnerCount = data.spinners
     if (typeof data.bots === 'number') gmBotCount = data.bots
   })
@@ -566,7 +608,7 @@ export function setupHud() {
       >
         {leaderboardUi()}
         <ScreenInsetArea>
-          {gmPanel()}
+          {gmAllowed() ? gmPanel() : null}
           {powerBarsUi()}
           {actionButtonsUi()}
         </ScreenInsetArea>

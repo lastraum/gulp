@@ -2,6 +2,7 @@ import { Entity, Transform, engine } from '@dcl/sdk/ecs'
 import {
   BLOB_SEPARATE,
   BOOST_MAX_STACKS,
+  BOOST_MS,
   BOOST_MULT,
   COG_HIT_CD_MS,
   COG_HIT_R,
@@ -16,6 +17,7 @@ import {
   START_MASS,
   blobEatsBlob,
   expAlpha,
+  isBot,
   radiusFromMass,
   shredMass,
   speedFromMass,
@@ -23,6 +25,7 @@ import {
 } from '../shared/config'
 import { room } from '../shared/messages'
 import { Blob, Cell } from '../shared/schemas'
+import { getBotMotion } from './bots'
 import { getCogHits } from './cogs'
 import { getFlamingoHits } from './flamingos'
 import { getMoveInput } from './input'
@@ -54,7 +57,7 @@ function liveLocalBoosts(now = Date.now()): number[] {
   return boostUntils
 }
 
-export function startBoost(until = Date.now() + 5000) {
+export function startBoost(until = Date.now() + BOOST_MS) {
   const live = liveLocalBoosts()
   live.push(until)
   boostUntils = live.length > BOOST_MAX_STACKS ? live.slice(live.length - BOOST_MAX_STACKS) : live
@@ -62,7 +65,17 @@ export function startBoost(until = Date.now() + 5000) {
 
 export function setBoosts(untils: number[]) {
   const now = Date.now()
-  boostUntils = untils.map((t) => Number(t)).filter((t) => t > now)
+  const cap = now + BOOST_MS * BOOST_MAX_STACKS + 500
+  boostUntils = untils.map((t) => Number(t)).filter((t) => t > now && t <= cap)
+}
+
+export function setBoostRemains(remains: number[]) {
+  const now = Date.now()
+  const cap = BOOST_MS * BOOST_MAX_STACKS + 500
+  boostUntils = remains
+    .map((r) => Number(r))
+    .filter((r) => r > 0 && r <= cap)
+    .map((r) => now + r)
 }
 
 export function getBoostStacks(): number {
@@ -86,6 +99,7 @@ export function getSpikeRemain(address?: string): number {
 }
 
 export function isSpiked(address: string): boolean {
+  if (isBot(address)) return true
   return Date.now() < (spikeUntil.get(address) ?? 0)
 }
 
@@ -178,26 +192,30 @@ function bounceFlamingos(blobId: number, p: Pred, r: number) {
 
 function bounceSpikes(blobId: number, p: Pred, mass: number, r: number): number {
   const me = getLocalAddress()
-  if (!me || isSpiked(me)) return mass
+  if (!me) return mass
   const now = Date.now()
   if (now - (spikeHitAt.get(blobId) ?? 0) < SPIKE_HIT_CD_MS) return mass
   for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
     if (isLocalAddr(blob.address)) continue
     if (!isSpiked(blob.address)) continue
-    const dx = p.x - blob.x
-    const dz = p.z - blob.z
+    if (!blobEatsBlob(mass, blob.mass, 0, 1)) continue
+    const at = isBot(blob.address) ? getBotMotion(blob.address) : null
+    const ox = at?.x ?? blob.x
+    const oz = at?.z ?? blob.z
+    const dx = p.x - ox
+    const dz = p.z - oz
     const dist = Math.sqrt(dx * dx + dz * dz)
     const otherR = radiusFromMass(blob.mass)
     const reach = (r + otherR) * 1.4
-    const eatish = blobEatsBlob(blob.mass, mass, dist, 2.2) || blobEatsBlob(mass, blob.mass, dist, 2.2)
+    const eatish = blobEatsBlob(mass, blob.mass, dist, 2.2)
     if ((dist >= reach && !eatish) || dist < 0.0001) continue
     spikeHitAt.set(blobId, now)
     const nx = dx / dist
     const nz = dz / dist
     p.vx = nx * SPIKE_IMPULSE
     p.vz = nz * SPIKE_IMPULSE
-    p.x = blob.x + nx * (r + otherR + 0.8)
-    p.z = blob.z + nz * (r + otherR + 0.8)
+    p.x = ox + nx * (r + otherR + 0.8)
+    p.z = oz + nz * (r + otherR + 0.8)
     const next = shredMass(mass)
     if (next < mass - 0.01) {
       localBlobMass.set(blobId, { mass: next, until: now + 2500 })
@@ -223,18 +241,12 @@ function tickLocalBlobs(dt: number) {
       p = { x: blob.x, z: blob.z, vx: blob.vx, vz: blob.vz }
       localPred.set(blob.blobId, p)
     } else if (Date.now() - (cogHitAt.get(blob.blobId) ?? 0) > 400) {
-      const dx = blob.x - p.x
-      const dz = blob.z - p.z
-      const err = Math.hypot(dx, dz)
-      if (err > 10) {
+      const err = Math.hypot(blob.x - p.x, blob.z - p.z)
+      if (err > 28) {
         p.x = blob.x
         p.z = blob.z
         p.vx = blob.vx
         p.vz = blob.vz
-      } else if (err > 1.25) {
-        const a = Math.min(0.4, (err - 1.25) * 0.09)
-        p.x += dx * a
-        p.z += dz * a
       }
     }
     const r = radiusFromMass(mass)

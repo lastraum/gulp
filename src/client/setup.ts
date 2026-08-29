@@ -3,6 +3,7 @@ import { logEvent } from '../shared/log'
 import { buildArena } from './arena'
 import { registerAudio } from './audio'
 import { registerFollow } from './follow'
+import { registerBots } from './bots'
 import { registerCogs } from './cogs'
 import { registerFlamingos } from './flamingos'
 import { hideAvatars } from './hideAvatars'
@@ -23,6 +24,7 @@ export async function initClient() {
   registerInput()
   registerCogs()
   registerFlamingos()
+  registerBots()
   registerSmooth()
   registerVisuals()
   registerEat()

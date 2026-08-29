@@ -2054,7 +2054,7 @@
                 "y": 0
               }
             },
-            "silenceVoiceChat": false,
+            "silenceVoiceChat": true,
             "disablePortableExperiences": false,
             "spawnPoints": [
               {

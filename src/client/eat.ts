@@ -7,14 +7,16 @@ import {
   START_MASS,
   blobEatsBlob,
   foodOverlaps,
+  isBot,
   radiusFromMass
 } from '../shared/config'
 import { logEvent } from '../shared/log'
 import { room } from '../shared/messages'
 import { Blob, Food } from '../shared/schemas'
+import { getBotMotion } from './bots'
 import { playFoodPop } from './audio'
 import { shakeCamera } from './follow'
-import { hideDeathUi, showDeathUi } from './hud'
+import { beginDeath, hideDeathUi } from './hud'
 import { getLocalAddress, isLocalAddr } from './local'
 import {
   applyBlobKnock,
@@ -31,10 +33,11 @@ import {
   recentlySpawned,
   setLocalMass,
   setBoosts,
+  setBoostRemains,
   startBoost,
   startSpike
 } from './smooth'
-import { isFoodGone, markFoodGone, spawnCollectBurst, spawnKillBurst } from './visuals'
+import { isFoodGone, markFoodGone, spawnCollectBurst, spawnDeathBurst, spawnKillBurst } from './visuals'
 
 const pending = new Set<number>()
 const pendingPlayers = new Map<number, number>()
@@ -71,8 +74,11 @@ export function registerEat() {
   })
   room.onMessage('playerKilled', (data) => {
     if (isLocalAddr(data.victim)) {
+      const pos = getLocalDisplayPos()
+      spawnDeathBurst(pos?.x ?? data.x, 3.2, pos?.z ?? data.z)
+      shakeCamera(2.2)
       applyDeath()
-      showDeathUi(data.killer)
+      beginDeath(data.killer)
       logEvent('player.died', { killer: data.killer, x: data.x, z: data.z })
       return
     }
@@ -89,6 +95,10 @@ export function registerEat() {
   })
   room.onMessage('boostStart', (data) => {
     if (!isLocalAddr(data.address)) return
+    if (Array.isArray(data.remains) && data.remains.length > 0) {
+      setBoostRemains(data.remains)
+      return
+    }
     if (Array.isArray(data.untils) && data.untils.length > 0) setBoosts(data.untils.map((t) => Number(t)))
     else startBoost(Number(data.until))
   })
@@ -159,14 +169,12 @@ export function registerEat() {
       if (!liveFood.has(id)) pending.delete(id)
     }
 
-    const me = getLocalAddress()
-    const meSpiked = isSpiked(me)
     type Seen = { blobId: number; address: string; x: number; z: number; sx: number; sz: number; mass: number }
     const locals: Seen[] = []
     const remotes: Seen[] = []
     for (const [_e, blob] of engine.getEntitiesWith(Blob)) {
       const local = isLocalAddr(blob.address)
-      const pred = local ? getLocalBlobPos(blob.blobId) : null
+      const pred = local ? getLocalBlobPos(blob.blobId) : isBot(blob.address) ? getBotMotion(blob.address) : null
       const seen: Seen = {
         blobId: blob.blobId,
         address: blob.address,
@@ -191,7 +199,8 @@ export function registerEat() {
 
     for (const prey of remotes) {
       if (pendingPlayers.has(prey.blobId)) continue
-      if (meSpiked || isSpiked(prey.address)) continue
+      if (isBot(prey.address)) continue
+      if (isSpiked(prey.address)) continue
       const hit = locals.some((meBlob) =>
         overlaps(
           meBlob.mass,
@@ -204,21 +213,19 @@ export function registerEat() {
       if (hit) reportEat(prey.blobId)
     }
 
-    if (!meSpiked) {
-      for (const meBlob of locals) {
-        if (pendingPlayers.has(meBlob.blobId)) continue
-        const eaten = remotes.some((eater) => {
-          if (isSpiked(eater.address)) return false
-          return overlaps(
-            eater.mass,
-            meBlob.mass,
-            Math.hypot(eater.x - meBlob.x, eater.z - meBlob.z),
-            Math.hypot(eater.sx - meBlob.sx, eater.sz - meBlob.sz),
-            1.5
-          )
-        })
-        if (eaten) reportEat(meBlob.blobId)
-      }
+    for (const meBlob of locals) {
+      if (pendingPlayers.has(meBlob.blobId)) continue
+      const eaten = remotes.some((eater) => {
+        if (isSpiked(meBlob.address) && eater.mass > meBlob.mass) return false
+        return overlaps(
+          eater.mass,
+          meBlob.mass,
+          Math.hypot(eater.x - meBlob.x, eater.z - meBlob.z),
+          Math.hypot(eater.sx - meBlob.sx, eater.sz - meBlob.sz),
+          1.5
+        )
+      })
+      if (eaten) reportEat(meBlob.blobId)
     }
   })
 }
