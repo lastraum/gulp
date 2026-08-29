@@ -1,0 +1,9 @@
+node_modules
+bin
+.env
+*.js.map
+.runtime-data
+.dcl
+.DS_Store
+main.crdt
+.editor

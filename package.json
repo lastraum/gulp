@@ -1,0 +1,28 @@
+{
+  "name": "gulp",
+  "version": "0.1.0",
+  "description": "Gulp — eat, grow, split, don't get gulped",
+  "scripts": {
+    "start": "sdk-commands start",
+    "start-web3": "sdk-commands start --web3",
+    "deploy": "sdk-commands deploy",
+    "build": "sdk-commands build",
+    "upgrade-sdk": "npm install --save-dev @dcl/sdk@auth-server",
+    "upgrade-sdk:next": "npm install --save-dev @dcl/sdk@auth-server",
+    "server-logs": "sdk-commands sdk-server-logs"
+  },
+  "devDependencies": {
+    "@dcl/js-runtime": "7.27.1-33086747846.commit-824d240",
+    "@dcl/sdk": "auth-server"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=6.0.0"
+  },
+  "prettier": {
+    "semi": false,
+    "singleQuote": true,
+    "printWidth": 120,
+    "trailingComma": "none"
+  }
+}
