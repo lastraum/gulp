@@ -350,8 +350,12 @@ function ensureFoodVisual(id: number, x: number, y: number, z: number, mass: num
     foodVisuals.set(id, vis)
   }
   const r = radiusFromMass(mass)
-  const pulse =
-    kind === FOOD_KIND_BOOST || kind === FOOD_KIND_SPIKE ? 1 + Math.sin(Date.now() / 180) * 0.12 : 1
+  const special = kind === FOOD_KIND_BOOST || kind === FOOD_KIND_SPIKE
+  if (!special && foodVisuals.has(id) && vis) {
+    const t = Transform.get(vis)
+    if (t.position.x === x && t.position.z === z) return
+  }
+  const pulse = special ? 1 + Math.sin(Date.now() / 180) * 0.12 : 1
   const d = r * 2 * pulse
   const t = Transform.getMutable(vis)
   t.position = Vector3.create(x, r * pulse, z)
@@ -459,6 +463,7 @@ export function registerVisuals() {
   })
 
   engine.addSystem((dt) => {
+    dt = Math.min(dt, 0.05)
     tickSparks(dt)
     const liveBlobs = new Set<number>()
     for (const [_entity, blob] of engine.getEntitiesWith(Blob)) {

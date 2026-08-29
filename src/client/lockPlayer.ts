@@ -20,5 +20,11 @@ function applyLock() {
 
 export function lockPlayer() {
   applyLock()
-  engine.addSystem(applyLock, -100, 'lock-hud')
+  let acc = 0
+  engine.addSystem((dt) => {
+    acc += dt
+    if (acc < 2) return
+    acc = 0
+    applyLock()
+  }, -100, 'lock-hud')
 }

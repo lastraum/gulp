@@ -9,11 +9,11 @@ import {
   engine,
   inputSystem
 } from '@dcl/sdk/ecs'
-import { Quaternion, Vector3 } from '@dcl/sdk/math'
+import { Vector3 } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
 import { AVATAR_Y, WORLD_M, radiusFromMass } from '../shared/config'
 import { Cell } from '../shared/schemas'
-import { setCamFlatForward } from './camLook'
+import { setCamYaw } from './camLook'
 import { isLocalAddr } from './local'
 import { getLocalDisplayPos, getLocalMass } from './smooth'
 
@@ -31,7 +31,6 @@ let pitch = 50
 let zoomMul = 1.15
 let sizeMul = 1
 let lastScreen: { x: number; y: number } | null = null
-let primed = false
 let shake = 0
 
 export function shakeCamera(amount = 1.4) {
@@ -67,6 +66,7 @@ function orbitInput(dt: number) {
     yaw += delta.x * SENS
     pitch = clamp(pitch - delta.y * SENS, PITCH_MIN, PITCH_MAX)
     lastScreen = null
+    setCamYaw(yaw)
     return
   }
 
@@ -74,6 +74,7 @@ function orbitInput(dt: number) {
     if (lastScreen) {
       yaw += (coords.x - lastScreen.x) * SENS
       pitch = clamp(pitch - (coords.y - lastScreen.y) * SENS, PITCH_MIN, PITCH_MAX)
+      setCamYaw(yaw)
     }
     lastScreen = { x: coords.x, y: coords.y }
     return
@@ -98,8 +99,10 @@ export function registerFollow() {
     defaultTransition: { transitionMode: VirtualCamera.Transition.Time(0) }
   })
   MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: camEye })
+  setCamYaw(yaw)
 
   engine.addSystem((dt) => {
+    dt = Math.min(dt, 0.05)
     orbitInput(dt)
 
     const cell = findMyCell()
@@ -140,22 +143,13 @@ export function registerFollow() {
     targetT.position.x = x
     targetT.position.y = lookY
     targetT.position.z = z
-    if (!primed) {
-      eyeT.position.x = eyeX
-      eyeT.position.y = eyeY
-      eyeT.position.z = eyeZ
-      primed = true
-    } else {
-      const a = 1 - Math.exp(-28 * dt)
-      eyeT.position.x += (eyeX - eyeT.position.x) * a
-      eyeT.position.y += (eyeY - eyeT.position.y) * a
-      eyeT.position.z += (eyeZ - eyeT.position.z) * a
-    }
-    eyeT.rotation = Quaternion.Identity()
-    setCamFlatForward(x - eyeT.position.x, z - eyeT.position.z)
+    eyeT.position.x = eyeX
+    eyeT.position.y = eyeY
+    eyeT.position.z = eyeZ
+    setCamYaw(yaw)
 
     moveAcc += dt
-    if (moveAcc < 0.12) return
+    if (moveAcc < 0.4) return
     moveAcc = 0
     void movePlayerTo({
       newRelativePosition: Vector3.create(x, AVATAR_Y, z)
