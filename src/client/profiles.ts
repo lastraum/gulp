@@ -1,5 +1,6 @@
 const CATALYST = 'https://peer.decentraland.org'
 const faces = new Map<string, string | null>()
+const names = new Map<string, string>()
 const pending = new Set<string>()
 
 function keyOf(address: string): string {
@@ -13,23 +14,40 @@ function resolveFace(raw: unknown): string | null {
   return `https://profile-images.decentraland.org/entities/${v}/face.png`
 }
 
-function faceFromProfile(data: unknown, wallet: string): string | null {
+function avatarFromProfile(data: unknown, wallet: string): any | null {
   const profiles = Array.isArray(data) ? data : data ? [data] : []
   const profile = profiles[0] as { avatars?: any[] } | undefined
   const avatars = profile?.avatars
   if (!Array.isArray(avatars) || avatars.length === 0) return null
   const want = keyOf(wallet)
-  const deployed =
+  return (
     avatars.find((entry) => keyOf(String(entry?.userId ?? entry?.ethAddress ?? '')) === want) ??
     avatars.find((entry) => entry?.avatar) ??
     avatars[0]
-  return resolveFace(deployed?.avatar?.snapshots?.face256)
+  )
+}
+
+function faceFromProfile(data: unknown, wallet: string): string | null {
+  return resolveFace(avatarFromProfile(data, wallet)?.avatar?.snapshots?.face256)
+}
+
+function nameFromProfile(data: unknown, wallet: string): string | null {
+  const deployed = avatarFromProfile(data, wallet)
+  const n = String(deployed?.name ?? '').trim()
+  return n || null
 }
 
 export function catalystFaceUrl(address: string): string | null {
   const key = keyOf(address)
   if (!key) return null
   return faces.get(key) ?? null
+}
+
+export function catalystName(address: string): string | null {
+  const key = keyOf(address)
+  if (!key) return null
+  const n = names.get(key)?.trim()
+  return n || null
 }
 
 export function requestCatalystFaces(addresses: string[]) {
@@ -60,6 +78,8 @@ async function loadFaces(ids: string[]) {
       const id = ids[i]
       const row = profiles[i]
       faces.set(id, row ? faceFromProfile(row, id) : null)
+      const nm = row ? nameFromProfile(row, id) : null
+      if (nm) names.set(id, nm)
       pending.delete(id)
     }
   } catch {

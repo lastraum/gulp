@@ -8,10 +8,11 @@ import { room } from '../shared/messages'
 import { Blob } from '../shared/schemas'
 import { sendCombine, sendGmCmd, sendSplit } from './input'
 import { getLocalAddress, isLocalAddr } from './local'
-import { catalystFaceUrl, requestCatalystFaces } from './profiles'
+import { catalystFaceUrl, catalystName, requestCatalystFaces } from './profiles'
 import { getBoostRemain, getBoostStacks, getSpikeRemain } from './smooth'
 
 type BoardRow = { address: string; name: string; best: number }
+type StatRow = { address: string; name: string; count: number }
 
 const SPLASH_MS = 5000
 const DEATH_UI_MS = DEATH_BURST_MS + 3500
@@ -21,6 +22,9 @@ let deathRevealAt = 0
 let deathUntil = 0
 let killerLabel = ''
 let storedBoard: BoardRow[] = []
+let foodBoard: StatRow[] = []
+let humansBoard: StatRow[] = []
+let statsOpen = false
 let splashUntil = 0
 let gmConfirmUntil = 0
 let gmFlashUntil = 0
@@ -41,12 +45,26 @@ function shortAddr(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
+function looksLikeId(name: string, address: string): boolean {
+  const n = name.trim()
+  if (!n) return true
+  const addr = address.trim().toLowerCase()
+  if (n.toLowerCase() === addr) return true
+  if (n.startsWith('0x') && n.length >= 10) return true
+  if (addr.length >= 8 && n.length <= 14 && addr.includes(n.toLowerCase())) return true
+  if (/^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9]{8,14}$/.test(n)) return true
+  if (/[0-9]/.test(n) && /^[A-Za-z0-9]{6,12}\s+[A-Za-z0-9]{2,14}$/.test(n)) return true
+  return false
+}
+
 function playerName(address: string): string {
   const bot = botName(address)
   if (bot) return bot
+  const fromCatalyst = catalystName(address)
+  if (fromCatalyst && !looksLikeId(fromCatalyst, address)) return fromCatalyst
   const p = getPlayer({ userId: address })
-  const name = p?.name?.trim()
-  if (name) return name
+  const live = p?.name?.trim()
+  if (live && !looksLikeId(live, address)) return live
   return shortAddr(address)
 }
 
@@ -61,7 +79,7 @@ function boardRows(): (BoardRow & { mine: boolean })[] {
   requestCatalystFaces(rows.filter((row) => !isBot(row.address)).map((row) => row.address))
   return rows.map((row) => ({
     ...row,
-    name: boardName(row.name || playerName(row.address)),
+    name: boardName((row.name && !looksLikeId(row.name, row.address) ? row.name : '') || playerName(row.address)),
     mine: isLocalAddr(row.address)
   }))
 }
@@ -139,15 +157,40 @@ function leaderboardUi() {
   return (
     <UiEntity
       uiTransform={{
-        width: 360,
+        width: 436,
         height: 108 + midH,
         positionType: 'absolute',
         position: { top: 8, right: '2%' },
-        flexDirection: 'column',
-        alignItems: 'center',
+        flexDirection: 'row',
+        alignItems: 'flex-start',
         pointerFilter: 'none'
       }}
     >
+      <UiEntity
+        uiTransform={{
+          width: 72,
+          height: 72,
+          margin: { top: 18, right: 10 },
+          pointerFilter: 'block'
+        }}
+        uiBackground={{
+          texture: { src: 'images/stats-icon.png' },
+          textureMode: 'stretch',
+          color: statsOpen ? Color4.create(0.75, 0.88, 1, 1) : Color4.create(1, 1, 1, 1)
+        }}
+        onMouseDown={() => {
+          statsOpen = !statsOpen
+        }}
+      />
+      <UiEntity
+        uiTransform={{
+          width: 360,
+          height: 108 + midH,
+          flexDirection: 'column',
+          alignItems: 'center',
+          pointerFilter: 'none'
+        }}
+      >
       <UiEntity
         uiTransform={{
           width: 360,
@@ -185,6 +228,181 @@ function leaderboardUi() {
         }}
       >
         {rows.map((row, i) => leaderRow(row, i))}
+      </UiEntity>
+      </UiEntity>
+    </UiEntity>
+  )
+}
+
+function namedStatRows(board: StatRow[]): (StatRow & { mine: boolean })[] {
+  const rows = board.slice(0, 5)
+  requestCatalystFaces(rows.filter((row) => !isBot(row.address)).map((row) => row.address))
+  return rows.map((row) => ({
+    ...row,
+    name: boardName((row.name && !looksLikeId(row.name, row.address) ? row.name : '') || playerName(row.address)),
+    mine: isLocalAddr(row.address)
+  }))
+}
+
+function statsLeaderRow(row: StatRow & { mine: boolean }, index: number) {
+  const face = catalystFaceUrl(row.address)
+  return (
+    <UiEntity
+      key={row.address}
+      uiTransform={{
+        width: 340,
+        height: 80,
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: { left: 8, right: 8 },
+        margin: { bottom: 8 }
+      }}
+    >
+      <Label
+        value={`${index + 1}`}
+        fontSize={35}
+        color={Color4.create(0, 0, 0, 1)}
+        textAlign="middle-center"
+        uiTransform={{ width: 52, height: 64 }}
+      />
+      <UiEntity
+        uiTransform={{ width: 56, height: 56, margin: { left: 4, right: 10 } }}
+        uiBackground={
+          face
+            ? { texture: { src: face }, textureMode: 'stretch' }
+            : { color: Color4.create(0.2, 0.2, 0.22, 1) }
+        }
+      />
+      <Label
+        value={row.name}
+        fontSize={31}
+        color={Color4.create(0, 0, 0, 1)}
+        textAlign="middle-left"
+        uiTransform={{ flexGrow: 1, height: 64 }}
+      />
+      <Label
+        value={`${row.count}`}
+        fontSize={28}
+        color={Color4.create(0, 0, 0, 1)}
+        textAlign="middle-right"
+        uiTransform={{ width: 72, height: 64 }}
+      />
+    </UiEntity>
+  )
+}
+
+function statsBoardColumn(title: string, board: StatRow[]) {
+  const rows = namedStatRows(board)
+  const midH = Math.max(200, rows.length * 88)
+  return (
+    <UiEntity
+      uiTransform={{
+        width: 360,
+        height: 108 + midH,
+        flexDirection: 'column',
+        alignItems: 'center',
+        margin: { left: 40, right: 40 }
+      }}
+    >
+      <UiEntity
+        uiTransform={{
+          width: 360,
+          height: 108,
+          justifyContent: 'flex-end',
+          alignItems: 'center',
+          padding: { bottom: 4, left: 6, right: 48 }
+        }}
+        uiBackground={{
+          texture: { src: 'images/leaderboard-header-v2.png' },
+          textureMode: 'stretch',
+          color: Color4.create(1, 1, 1, 1)
+        }}
+      >
+        <Label
+          value={title}
+          fontSize={21}
+          color={Color4.White()}
+          textAlign="middle-center"
+          uiTransform={{
+            width: 200,
+            height: 40,
+            positionType: 'absolute',
+            position: { left: 77, top: 44 }
+          }}
+        />
+      </UiEntity>
+      <UiEntity
+        uiTransform={{
+          width: 340,
+          height: midH,
+          flexDirection: 'column',
+          alignItems: 'center',
+          padding: { top: 16, bottom: 16 }
+        }}
+      >
+        {rows.length === 0
+          ? (
+            <Label
+              value="—"
+              fontSize={31}
+              color={Color4.create(0, 0, 0, 1)}
+              textAlign="middle-center"
+              uiTransform={{ width: 340, height: 64 }}
+            />
+          )
+          : rows.map((row, i) => statsLeaderRow(row, i))}
+      </UiEntity>
+    </UiEntity>
+  )
+}
+
+function statsPanelUi() {
+  if (!statsOpen) return null
+  return (
+    <UiEntity
+      uiTransform={{
+        width: '100%',
+        height: '100%',
+        positionType: 'absolute',
+        justifyContent: 'center',
+        alignItems: 'center',
+        pointerFilter: 'block'
+      }}
+      uiBackground={{ color: Color4.create(0, 0, 0, 0.5) }}
+    >
+      <UiEntity
+        uiTransform={{
+          width: 960,
+          height: 108 + Math.max(200, 5 * 88),
+          flexDirection: 'row',
+          justifyContent: 'center',
+          alignItems: 'flex-start'
+        }}
+      >
+        {statsBoardColumn('FOOD', foodBoard)}
+        {statsBoardColumn('HUMANS', humansBoard)}
+      </UiEntity>
+      <UiEntity
+        uiTransform={{
+          width: 44,
+          height: 44,
+          positionType: 'absolute',
+          position: { top: 24, right: 24 },
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}
+        uiBackground={{ color: Color4.create(0.18, 0.18, 0.22, 0.95) }}
+        onMouseDown={() => {
+          statsOpen = false
+        }}
+      >
+        <Label
+          value="X"
+          fontSize={22}
+          color={Color4.White()}
+          textAlign="middle-center"
+          uiTransform={{ width: 44, height: 44 }}
+        />
       </UiEntity>
     </UiEntity>
   )
@@ -589,6 +807,11 @@ export function setupHud() {
     storedBoard = Array.isArray(data.rows) ? data.rows : []
     requestCatalystFaces(storedBoard.map((row) => row.address))
   })
+  room.onMessage('statsBoard', (data) => {
+    foodBoard = Array.isArray(data.food) ? data.food : []
+    humansBoard = Array.isArray(data.humans) ? data.humans : []
+    requestCatalystFaces([...foodBoard, ...humansBoard].map((row) => row.address))
+  })
   room.onMessage('gmState', (data) => {
     gmFlamingosOn = !!data.flamingos
     gmForgeOn = !!data.forge
@@ -597,7 +820,7 @@ export function setupHud() {
   })
 
   const rootUi = () => {
-    const overlay = isSplashActive() || isDeathUiVisible()
+    const overlay = isSplashActive() || isDeathUiVisible() || statsOpen
     return (
       <UiEntity
         uiTransform={{
@@ -607,6 +830,7 @@ export function setupHud() {
         }}
       >
         {leaderboardUi()}
+        {statsPanelUi()}
         <ScreenInsetArea>
           {gmAllowed() ? gmPanel() : null}
           {powerBarsUi()}

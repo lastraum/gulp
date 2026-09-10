@@ -8,7 +8,7 @@ A mobile-first multiplayer arena in [Decentraland](https://decentraland.org/). D
   <img src="images/scene-thumbnail.png" alt="Gulp — a smiling candy blob in a pastel playground" width="720" />
 </p>
 
-Play now: **[gulp.dcl.eth](https://decentraland.org/jump/?realm=gulp.dcl.eth)**
+Play now: **[decentraland.social/gulp](https://decentraland.social/gulp)**
 
 Works on [Decentraland Mobile](https://decentraland.org/) (iOS / Android) and desktop. Avatars are hidden — everyone is a blob.
 

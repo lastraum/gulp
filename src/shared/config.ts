@@ -1,4 +1,4 @@
-export const PARCELS = 20
+export const PARCELS = 60
 export const PARCEL_M = 16
 export const WORLD_M = PARCELS * PARCEL_M
 
@@ -9,8 +9,9 @@ export const ARENA = {
 }
 
 export const WORLD_CENTER = WORLD_M / 2
+export const ARENA_RADIUS = 150
 
-export const START_MASS = 10
+export const START_MASS = 3.5
 export const PLAYER_COLORS = 12
 export const BOT_COUNT = 2
 export const BOT_MAX = 12
@@ -89,11 +90,23 @@ export const FLAMINGO_SPEED = 11
 export const FLAMINGO_IMPULSE = 64
 export const FLAMINGO_HIT_CD_MS = 280
 export const FLAMINGO_Y = 0.445 * FLAMINGO_SCALE
+export const CANE_COUNT_MIN = 12
+export const CANE_COUNT_MAX = 16
+export const CANE_SCALE_MIN = 10
+export const CANE_SCALE_MAX = 16
+export const CANE_HIT_K = 0.2
+export const CANE_HIT_CD_MS = 280
+export const CANE_BOUNCE = WALL_BOUNCE * 2
+export const CANE_IMPULSE = WALL_IMPULSE * 2
+export const CANE_MIN_CENTER = 34
+export const CANE_RING_PAD = 22
+export const CANE_SEP_PAD = 4
+export const CANE_Y0 = 0.5
 
 /** Mix of sqrt + linear so food and player eats both read as growth. */
 export function radiusFromMass(mass: number): number {
   const m = Math.max(0, mass)
-  const span = ARENA.max - ARENA.min
+  const span = ARENA_RADIUS * 2
   const cap = span * 0.35
   return Math.min(cap, Math.max(0.5, 0.45 * Math.sqrt(m) + 0.08 * m))
 }
@@ -119,10 +132,14 @@ export function blobEatsBlob(eaterMass: number, preyMass: number, dist: number, 
 
 export function clampArena(x: number, z: number, radius: number): { x: number; z: number } {
   const pad = radius + 0.2
-  return {
-    x: Math.min(ARENA.max - pad, Math.max(ARENA.min + pad, x)),
-    z: Math.min(ARENA.max - pad, Math.max(ARENA.min + pad, z))
-  }
+  const maxR = Math.max(0, ARENA_RADIUS - pad)
+  const dx = x - WORLD_CENTER
+  const dz = z - WORLD_CENTER
+  const dist = Math.hypot(dx, dz)
+  if (dist <= maxR) return { x, z }
+  if (dist < 1e-8) return { x: WORLD_CENTER, z: WORLD_CENTER }
+  const k = maxR / dist
+  return { x: WORLD_CENTER + dx * k, z: WORLD_CENTER + dz * k }
 }
 
 export function mulberry32(seed: number): () => number {
@@ -137,10 +154,12 @@ export function mulberry32(seed: number): () => number {
 
 export function randomArenaPoint(radius: number, rng: () => number = Math.random): { x: number; z: number } {
   const pad = radius + 2
-  const span = ARENA.max - ARENA.min - pad * 2
+  const maxR = Math.max(0, ARENA_RADIUS - pad)
+  const a = rng() * Math.PI * 2
+  const r = Math.sqrt(rng()) * maxR
   return {
-    x: ARENA.min + pad + rng() * span,
-    z: ARENA.min + pad + rng() * span
+    x: WORLD_CENTER + Math.cos(a) * r,
+    z: WORLD_CENTER + Math.sin(a) * r
   }
 }
 
@@ -173,26 +192,53 @@ export function stepBody(
   x += vx * dt
   z += vz * dt
 
-  dt = Math.min(0.05, Math.max(0, dt))
-  const min = ARENA.min + radius + 0.15
-  const max = ARENA.max - radius - 0.15
-  if (min >= max) {
-    const mid = (ARENA.min + ARENA.max) / 2
-    return { x: mid, z: mid, vx: 0, vz: 0 }
+  const limit = ARENA_RADIUS - radius - 0.15
+  if (limit <= 0) {
+    return { x: WORLD_CENTER, z: WORLD_CENTER, vx: 0, vz: 0 }
   }
-  if (x < min) {
-    x = min
-    if (vx < 0) vx = Math.abs(vx) * WALL_BOUNCE + WALL_IMPULSE
-  } else if (x > max) {
-    x = max
-    if (vx > 0) vx = -Math.abs(vx) * WALL_BOUNCE - WALL_IMPULSE
-  }
-  if (z < min) {
-    z = min
-    if (vz < 0) vz = Math.abs(vz) * WALL_BOUNCE + WALL_IMPULSE
-  } else if (z > max) {
-    z = max
-    if (vz > 0) vz = -Math.abs(vz) * WALL_BOUNCE - WALL_IMPULSE
+  const dx = x - WORLD_CENTER
+  const dz = z - WORLD_CENTER
+  const dist = Math.hypot(dx, dz)
+  if (dist > limit) {
+    const inv = dist > 1e-8 ? 1 / dist : 1
+    const nx = dist > 1e-8 ? dx * inv : 1
+    const nz = dist > 1e-8 ? dz * inv : 0
+    x = WORLD_CENTER + nx * limit
+    z = WORLD_CENTER + nz * limit
+    const vn = vx * nx + vz * nz
+    if (vn > 0) {
+      vx -= nx * (vn * (1 + WALL_BOUNCE) + WALL_IMPULSE)
+      vz -= nz * (vn * (1 + WALL_BOUNCE) + WALL_IMPULSE)
+    }
   }
   return { x, z, vx, vz }
+}
+
+export function resolveCaneBounce(
+  x: number,
+  z: number,
+  vx: number,
+  vz: number,
+  radius: number,
+  cx: number,
+  cz: number,
+  hitR: number
+): { x: number; z: number; vx: number; vz: number; hit: boolean } {
+  const dx = x - cx
+  const dz = z - cz
+  const dist = Math.hypot(dx, dz)
+  const min = hitR + radius
+  if (dist >= min) return { x, z, vx, vz, hit: false }
+  // n points into the cane (blob → obstacle), same as the arena wall's outward n
+  const nx = dist > 1e-8 ? -dx / dist : -1
+  const nz = dist > 1e-8 ? -dz / dist : 0
+  x = cx - nx * min
+  z = cz - nz * min
+  const vn = vx * nx + vz * nz
+  if (vn > 0) {
+    vx -= nx * (vn * (1 + CANE_BOUNCE) + CANE_IMPULSE)
+    vz -= nz * (vn * (1 + CANE_BOUNCE) + CANE_IMPULSE)
+  }
+  const placed = clampArena(x, z, radius)
+  return { x: placed.x, z: placed.z, vx, vz, hit: true }
 }

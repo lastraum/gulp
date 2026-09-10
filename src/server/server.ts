@@ -41,9 +41,10 @@ import { isGm } from '../shared/gm'
 import { logEvent } from '../shared/log'
 import { room } from '../shared/messages'
 import { Blob, Cell, Food, Heartbeat, protectServerWrites } from '../shared/schemas'
-import { loadBoard, recordBest, rememberName, resetBoard, sendBoard } from './board'
+import { loadBoard, recordBest, recordFood, recordHuman, rememberName, resetBoard, sendBoard, sendStats } from './board'
 
 import { addBot, botCount, botPosition, forgetBot, isBot, loadBots, removeBot, sendBotsTo, tickBots } from './bots'
+import { spawnCanes, sendCanesTo, hitCaneEntity, tickCanes } from './canes'
 import { addCog, cogCount, hitCogEntity, removeCog, sendCogsTo, spawnCogs, tickCogs } from './cogs'
 import { clearFlamingos, hasFlamingos, sendFlamingosTo, spawnFlamingos, tickFlamingos } from './flamingos'
 import { initForge, isForgePinging, noteFoodEaten, noteHumanEaten, reportForgeLeave, setForgePinging } from './forge'
@@ -311,6 +312,7 @@ function tryEatFood(blobEntity: Entity, foodEntity: Entity, foodId: number, food
   const address = Blob.get(blobEntity).address
   if (isBot(address) && kind !== FOOD_KIND_PELLET) return false
   noteFoodEaten(address)
+  if (kind === FOOD_KIND_PELLET) recordFood(address)
   if (kind === FOOD_KIND_BOOST) {
     grantBoost(address)
     removeFood(foodId, foodEntity)
@@ -383,6 +385,7 @@ function blobById(blobId: number): Entity | null {
 
 function killPlayer(victim: string, killer: string, x: number, z: number) {
   noteHumanEaten(killer, victim)
+  recordHuman(killer, victim)
   clearBlobs(victim)
   const cell = cells.get(victim)
   if (cell && Cell.has(cell)) {
@@ -626,6 +629,7 @@ function tickMove(dt: number) {
       b.z = next.z
       b.vx = next.vx
       b.vz = next.vz
+      hitCaneEntity(blobEntity)
     }
     let cx = 0
     let cz = 0
@@ -771,6 +775,7 @@ export function initServer() {
   for (let i = 0; i < BOOST_COUNT; i++) spawnBoost()
   for (let i = 0; i < SPIKE_COUNT; i++) spawnSpike()
   spawnCogs()
+  spawnCanes()
   void loadBots(spawnCell, removeCell).then(() => sendGmState())
   // flamingos off by default — GM Obstacles tab can spawn them
   // spawnFlamingos()
@@ -783,10 +788,12 @@ export function initServer() {
     if (existing && Cell.has(existing)) respawnCell(existing, address)
     else spawnCell(address)
     sendCogsTo(address)
+    sendCanesTo(address)
     sendBotsTo(address)
     if (hasFlamingos()) sendFlamingosTo(address)
     sendPowersTo(address)
     sendBoard(address)
+    sendStats(address)
     sendGmState(address)
   })
 
@@ -866,6 +873,16 @@ export function initServer() {
     if (hitCogEntity(entity, 1.45)) refreshCellMass(address)
   })
 
+  room.onMessage('hitCane', (data, context) => {
+    if (!context?.from) return
+    const address = normalizeAddress(context.from)
+    if (isDead(address)) return
+    const entity = blobById(data.blobId)
+    if (!entity || !Blob.has(entity)) return
+    if (Blob.get(entity).address !== address) return
+    hitCaneEntity(entity, 1.45)
+  })
+
   room.onMessage('split', (data, context) => {
     if (!context?.from) return
     splitPlayer(normalizeAddress(context.from), data.x, data.z)
@@ -939,6 +956,7 @@ export function initServer() {
       syncPlayers()
       tickMove(dt)
       tickCogs((address) => refreshCellMass(address))
+      tickCanes()
       if (hasFlamingos()) tickFlamingos()
       tickBots(isDead)
       tickEat()

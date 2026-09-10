@@ -14,6 +14,22 @@ export const Messages = {
       })
     )
   }),
+  statsBoard: Schemas.Map({
+    food: Schemas.Array(
+      Schemas.Map({
+        address: Schemas.String,
+        name: Schemas.String,
+        count: Schemas.Int
+      })
+    ),
+    humans: Schemas.Array(
+      Schemas.Map({
+        address: Schemas.String,
+        name: Schemas.String,
+        count: Schemas.Int
+      })
+    )
+  }),
   move: Schemas.Map({
     x: Schemas.Float,
     z: Schemas.Float
@@ -100,6 +116,21 @@ export const Messages = {
     spin: Schemas.Float,
     duration: Schemas.Float,
     points: Schemas.Array(Schemas.Vector3)
+  }),
+  caneLayout: Schemas.Map({
+    seed: Schemas.Float,
+    canes: Schemas.Array(
+      Schemas.Map({
+        id: Schemas.Int,
+        x: Schemas.Float,
+        z: Schemas.Float,
+        yaw: Schemas.Float,
+        scale: Schemas.Float
+      })
+    )
+  }),
+  hitCane: Schemas.Map({
+    blobId: Schemas.Int
   }),
   flamingoPath: Schemas.Map({
     id: Schemas.Int,

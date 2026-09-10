@@ -8,6 +8,16 @@ import { isSplashActive } from './hud'
 
 let sendAcc = 0
 let joined = false
+let sentName = ''
+
+function dclJoinName(): string {
+  const n = getPlayer()?.name?.trim() ?? ''
+  if (!n) return ''
+  if (n.startsWith('0x') && n.length >= 10) return ''
+  if (/^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9]{8,14}$/.test(n)) return ''
+  if (/[0-9]/.test(n) && /^[A-Za-z0-9]{6,12}\s+[A-Za-z0-9]{2,14}$/.test(n)) return ''
+  return n
+}
 let lastX = 0
 let lastZ = 0
 let jumpHeld = false
@@ -47,9 +57,15 @@ export function registerInput() {
     if (!isStateSyncronized()) return
     if (isSplashActive()) return
     if (!joined) {
-      room.send('join', { name: getPlayer()?.name ?? '' })
+      sentName = dclJoinName()
+      room.send('join', { name: sentName })
       joined = true
       return
+    }
+    const later = dclJoinName()
+    if (later && later !== sentName) {
+      sentName = later
+      room.send('join', { name: later })
     }
 
     const jump = inputSystem.isPressed(InputAction.IA_JUMP)

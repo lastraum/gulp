@@ -4,6 +4,7 @@ import {
   BOOST_MAX_STACKS,
   BOOST_MS,
   BOOST_MULT,
+  CANE_HIT_CD_MS,
   COG_HIT_CD_MS,
   COG_HIT_R,
   COG_IMPULSE,
@@ -19,6 +20,7 @@ import {
   expAlpha,
   isBot,
   radiusFromMass,
+  resolveCaneBounce,
   shredMass,
   speedFromMass,
   stepBody
@@ -26,6 +28,7 @@ import {
 import { room } from '../shared/messages'
 import { Blob, Cell } from '../shared/schemas'
 import { getBotMotion } from './bots'
+import { getCaneHits } from './canes'
 import { getCogHits } from './cogs'
 import { getFlamingoHits } from './flamingos'
 import { getMoveInput } from './input'
@@ -49,6 +52,8 @@ let boostUntils: number[] = []
 const spikeUntil = new Map<string, number>()
 const cogHitAt = new Map<number, number>()
 const cogInside = new Set<string>()
+const caneHitAt = new Map<number, number>()
+const caneInside = new Set<string>()
 const flamingoHitAt = new Map<number, number>()
 const spikeHitAt = new Map<number, number>()
 
@@ -170,6 +175,38 @@ function bounceBlob(blobId: number, p: Pred, mass: number, r: number): number {
   return mass
 }
 
+function bounceCanes(blobId: number, p: Pred, r: number) {
+  const now = Date.now()
+  let overlapping = false
+  for (const cane of getCaneHits()) {
+    const dx = p.x - cane.x
+    const dz = p.z - cane.z
+    const dist = Math.sqrt(dx * dx + dz * dz)
+    const reach = cane.hitR + r
+    const key = `${blobId}:${cane.id}`
+    if (dist >= reach) {
+      caneInside.delete(key)
+      continue
+    }
+    overlapping = true
+    const next = resolveCaneBounce(p.x, p.z, p.vx, p.vz, r, cane.x, cane.z, cane.hitR)
+    p.x = next.x
+    p.z = next.z
+    p.vx = next.vx
+    p.vz = next.vz
+    if (!caneInside.has(key) && now - (caneHitAt.get(blobId) ?? 0) >= CANE_HIT_CD_MS) {
+      caneInside.add(key)
+      caneHitAt.set(blobId, now)
+      room.send('hitCane', { blobId })
+    }
+  }
+  if (!overlapping) {
+    for (const key of [...caneInside]) {
+      if (key.startsWith(`${blobId}:`)) caneInside.delete(key)
+    }
+  }
+}
+
 function bounceFlamingos(blobId: number, p: Pred, r: number) {
   const now = Date.now()
   if (now - (flamingoHitAt.get(blobId) ?? 0) < FLAMINGO_HIT_CD_MS) return
@@ -240,7 +277,10 @@ function tickLocalBlobs(dt: number) {
     if (!p) {
       p = { x: blob.x, z: blob.z, vx: blob.vx, vz: blob.vz }
       localPred.set(blob.blobId, p)
-    } else if (Date.now() - (cogHitAt.get(blob.blobId) ?? 0) > 400) {
+    } else if (
+      Date.now() - (cogHitAt.get(blob.blobId) ?? 0) > 400 &&
+      Date.now() - (caneHitAt.get(blob.blobId) ?? 0) > 400
+    ) {
       const err = Math.hypot(blob.x - p.x, blob.z - p.z)
       if (err > 28) {
         p.x = blob.x
@@ -256,6 +296,7 @@ function tickLocalBlobs(dt: number) {
     p.vx = next.vx
     p.vz = next.vz
     mass = bounceBlob(blob.blobId, p, mass, r)
+    bounceCanes(blob.blobId, p, r)
     bounceFlamingos(blob.blobId, p, r)
     mass = bounceSpikes(blob.blobId, p, mass, r)
     masses.set(blob.blobId, mass)
@@ -395,6 +436,7 @@ export function applyBlobKnock(blobId: number, x: number, z: number, vx: number,
   p.vz = vz
   const now = Date.now()
   cogHitAt.set(blobId, now)
+  caneHitAt.set(blobId, now)
   const prev = resolvedMass(blobId, mass)
   if (mass + 0.05 < prev) {
     localBlobMass.set(blobId, { mass, until: now + 2500 })
@@ -412,6 +454,8 @@ export function applyDeath() {
   localBlobMass.clear()
   cogHitAt.clear()
   cogInside.clear()
+  caneHitAt.clear()
+  caneInside.clear()
   flamingoHitAt.clear()
   shredUntil = 0
   boostUntils = []
@@ -429,6 +473,8 @@ export function applyRespawn(x: number, z: number) {
   localBlobMass.clear()
   cogHitAt.clear()
   cogInside.clear()
+  caneHitAt.clear()
+  caneInside.clear()
   flamingoHitAt.clear()
   shredUntil = 0
   spawnUntil = Date.now() + 400
@@ -444,4 +490,6 @@ export function resetPrediction() {
   localBlobMass.clear()
   cogHitAt.clear()
   cogInside.clear()
+  caneHitAt.clear()
+  caneInside.clear()
 }
