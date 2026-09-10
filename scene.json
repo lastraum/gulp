@@ -3647,7 +3647,7 @@
   ],
   "featureToggles": {
     "voiceChat": "disabled",
-    "portableExperiences": "enabled",
+    "portableExperiences": "disabled",
     "nearbyVoiceChat": "enabled"
   },
   "skyboxConfig": {
