@@ -1,13 +1,13 @@
 import { isBot } from '../shared/config'
 import { logEvent } from '../shared/log'
 
-/** Fill these from the gulp verse. The action must ADD the sent values, not SET. */
+/** Fill these locally from the gulp verse. The action must ADD the sent values, not SET. */
 const FORGE_URL = 'https://theforgecore.xyz/ws'
-const FORGE_VERSE_ID = '0d29643e-d845-46f0-952f-b0c3d510e674'
-const FORGE_ACTION_ID = 'action_1788024400539_v7s2o5snd'
-const FORGE_SERVER_TOKEN = 'forge_a7bc0836ff1e394b7b05c53b8d3aca44a8a928f81ea79f20afc60a7404d684ed'
-const FORGE_FOOD_VAR_ID = 'd98a7df5-abcd-4060-8002-cb2ec5cb83ba'
-const FORGE_HUMANS_VAR_ID = '30808a81-70ce-415a-bd8d-425797b48f0e'
+const FORGE_VERSE_ID = ''
+const FORGE_ACTION_ID = ''
+const FORGE_SERVER_TOKEN = ''
+const FORGE_FOOD_VAR_ID = ''
+const FORGE_HUMANS_VAR_ID = ''
 
 const foodEaten = new Map<string, number>()
 const humansEaten = new Map<string, number>()
